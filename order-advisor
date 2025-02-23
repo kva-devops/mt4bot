@@ -1,0 +1,211 @@
+//+------------------------------------------------------------------+
+//|                                                monitorXAUUSD.mq4 |
+//|                                  Copyright 2025, MetaQuotes Ltd. |
+//|                                             https://www.mql5.com |
+//+------------------------------------------------------------------+
+#property copyright "Copyright 2025, MetaQuotes Ltd."
+#property link      "https://www.mql5.com"
+#property version   "1.00"
+#property strict
+
+//+------------------------------------------------------------------+
+//| Global constants                                   |
+//+------------------------------------------------------------------+
+
+string symbol = "ETHUSD"; // Используемый символ
+int timeframe = PERIOD_M5; // Таймфрейм для анализа
+
+// время для получения индекса фиксов
+int hourAM = 11;
+int minuteAM = 35;
+int hourPM = 16;
+int minutePM = 5;
+
+// параметры для открытия ордера
+double stoploss = 0;
+
+// коды операций
+int OP_BUY = 0;
+int OP_SELL = 1;
+
+// объем лота
+double lotVolume = 0.5;
+
+// проскальзывание
+int slippage = 15;
+
+// шаг для takeProfit, в USD
+double step = 2.0;
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit() {
+      Print("Советник запущен.");
+      return(INIT_SUCCEEDED);
+}
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason) {
+      // Деинициализация советника
+      Print("Советник остановлен.");
+}
+
+//+------------------------------------------------------------------+
+// Метод для вычисления индекса актуального фикса fixIndex           |
+//+------------------------------------------------------------------+
+int CalculateFixIndex(datetime currentTime, string symbol, int timeframe, int hourAM, int minuteAM, int hourPM, int minutePM) {
+      int fixIndex = -1; // Значение по умолчанию
+      
+      // Получаем компоненты даты и времени
+      int year = TimeYear(currentTime);
+      int month = TimeMonth(currentTime);
+      int day = TimeDay(currentTime);
+      int second = 0;
+      
+      // Формируем строки с фиксированным временем
+      string timeStringAM = StringConcatenate(year, ".", month, ".", day, " ", hourAM, ":", minuteAM, ":", second);
+      string timeStringPM = StringConcatenate(year, ".", month, ".", day, " ", hourPM, ":", minutePM, ":", second);
+      
+      // Преобразуем строки в datetime
+      datetime fixTimeAM = StringToTime(timeStringAM);
+      datetime fixTimePM = StringToTime(timeStringPM);
+      
+      // Проверяем, в каком интервале находится текущее время
+      if (currentTime >= fixTimeAM && currentTime < fixTimePM) {
+          // Используем fixTimeAM
+          fixIndex = iBarShift(symbol, timeframe, fixTimeAM, true);
+          Print("fixIndex: ", fixIndex);
+          Print("Current time: ", currentTime);
+          Print("Actual fixTimeAM: ", fixTimeAM);
+      } else if (currentTime >= fixTimePM) {
+          // Используем fixTimePM
+          fixIndex = iBarShift(symbol, timeframe, fixTimePM, true);
+          Print("fixIndex: ", fixIndex);
+          Print("Current time: ", currentTime);
+          Print("Actual fixTimePM: ", fixTimePM);
+      }
+      
+      // Возвращаем результат
+      return fixIndex;
+}
+
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick() {
+      //---
+      datetime currentTime = TimeCurrent(); // Текущее время
+   
+      // Получаем индекс свечи для текущего времени
+      int currentIndex = iBarShift(symbol, timeframe, currentTime);
+      
+      // Если свеча не найдена, выводим сообщение и выходим
+      if (currentIndex == -1) {
+         Print("Свеча для времени ", TimeToString(currentTime), " не найдена");
+         return;
+      }
+      
+      // Получаем значения High и Low текущий свечи
+      double currentHigh = iHigh(symbol, timeframe, currentIndex);
+      double currentLow = iLow(symbol, timeframe, currentIndex);
+     
+      // Вычисляем fixIndex с помощью отдельного метода
+      int fixIndex = CalculateFixIndex(currentTime, symbol, timeframe, hourAM, minuteAM, hourPM, minutePM);
+      
+      // Получаем high и low для fixIndex
+      double fixHigh = iHigh(symbol, timeframe, fixIndex);
+      double fixLow = iLow(symbol, timeframe, fixIndex);
+      
+      // Проверяем, был ли найден индекс
+      if (fixIndex == -1) {
+         Print("Не удалось найти индекс свечи фикса.");
+      } else {
+         Print("Actual fix index: ", fixIndex);
+      }
+      
+      // Устанавливаем пороги для открытия ордеров
+      double thresholdHigh = fixHigh + step;
+      double thresholdLow = fixLow - step;
+      
+      // Устанавливаем takeProfit для ордеров
+      double takeProfitHigh = fixHigh;
+      double takeProfitLow = fixLow; 
+      
+      if (thresholdHigh <= currentHigh) {
+         Print("Send SELL order");
+         sendOrder(takeProfitHigh, OP_SELL);
+      } else if (thresholdLow >= currentLow) {
+         Print("Send BUY order");
+         sendOrder(takeProfitLow, OP_BUY);
+      } else {
+         Print("Действий не требуется.");
+      }   
+      
+}
+     
+ 
+//+------------------------------------------------------------------+
+//| Send order                                                       |
+//+------------------------------------------------------------------+
+int sendOrder(double takeProfit, int orderType) {
+   double price = 0;
+   if (orderType == OP_BUY) {
+      price = SymbolInfoDouble(symbol, SYMBOL_ASK);
+   } else if (orderType == OP_SELL) {
+      price = SymbolInfoDouble(symbol, SYMBOL_BID);
+   }
+   
+   int maxAttempts = 5;
+   int attempt = 0;
+
+   while (attempt < maxAttempts){
+      if (!IsTradeAllowed()){
+         Print("Торговля запрещена. Дождитесь разрешения.");
+         return -1;
+      }
+
+      if (!IsConnected()){
+         Print("Нет подключения к серверу.");
+         return -1;
+      }
+
+      int ticket = OrderSend(
+                             symbol,           // Символ
+                             orderType,        // Тип ордера (OP_BUY или OP_SELL)
+                             lotVolume,        // Объем лота
+                             price,            // Цена открытия
+                             slippage,         // Максимальное отклонение цены (в пунктах)
+                             stoploss,         // Стоп-лосс
+                             takeProfit,       // Тейк-профит
+                             "Order",          // Комментарий
+                             0,                // идентификатор ордера
+                             0,                // Срок истечения ордера (0 для рыночного ордера)
+                             clrNONE           // Цвет на графике
+      );
+
+      if (ticket < 0) {
+         Print("Ошибка при открытии ордера: ", GetLastError());
+         attempt++;
+      } else {
+         Print("Ордер успешно открыт. Тикет: ", ticket);
+         return ticket; 
+        }
+   }
+
+   if (attempt >= maxAttempts) {
+      Print("Не удалось открыть ордер после ", maxAttempts, " попыток.");
+      return -1;
+   }
+   
+}
+  
+//+------------------------------------------------------------------+
+//| Timer function                                                   |
+//+------------------------------------------------------------------+
+void OnTimer() {
+//---
+}
+//+------------------------------------------------------------------+
